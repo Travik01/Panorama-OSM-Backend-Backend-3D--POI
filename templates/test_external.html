@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Тестовый сайт с 3D фреймом</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f1216;color:#e7e9ee}
+  header{background:#161b22;border-bottom:1px solid #2a2f3a;padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+  header h1{margin:0;font-size:18px}
+  header span{font-size:12px;color:#9aa1ae}
+  main{display:grid;grid-template-columns:360px 1fr;gap:0;height:calc(100vh - 56px)}
+  aside{background:#1a1f28;border-right:1px solid #2a2f3a;padding:16px;overflow:auto}
+  aside h3{margin:0 0 12px;font-size:14px}
+  label{display:block;font-size:12px;color:#9aa1ae;margin:10px 0 4px}
+  input,button{width:100%;padding:8px 10px;border-radius:8px;border:1px solid #2a2f3a;background:#0f1216;color:#e7e9ee;font-size:13px}
+  button{cursor:pointer;background:#4d8dff;border-color:#4d8dff;color:#fff;font-weight:600;margin-top:12px}
+  button.secondary{background:#262c36;border-color:#2a2f3a;color:#9aa1ae}
+  pre{background:#0f1216;border:1px solid #2a2f3a;border-radius:8px;padding:10px;font-size:11px;overflow:auto;white-space:pre-wrap;word-break:break-all;color:#9aa1ae}
+  .frame-wrap{position:relative;background:#87CEEB}
+  iframe{width:100%;height:100%;border:0;display:block;background:#87CEEB}
+  .badge{position:absolute;left:12px;top:12px;background:rgba(0,0,0,.6);color:#fff;font-size:11px;padding:4px 8px;border-radius:6px;z-index:2}
+  .row{display:flex;gap:8px}
+  .row > *{flex:1}
+  .hint{font-size:11px;color:#6a7080;margin-top:8px;line-height:1.4}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏠 Мой сайт (демо) + ваш 3D фрейм</h1>
+  <span>localhost:8080/test-external — эмуляция чужого сайта</span>
+</header>
+<main>
+  <aside>
+    <h3>Управление фреймом</h3>
+    <label>Широта (lat)</label>
+    <input id="inp-lat" value="57.1522"/>
+    <label>Долгота (lon)</label>
+    <input id="inp-lon" value="65.5272"/>
+    <label>Радиус (м)</label>
+    <input id="inp-radius" value="300" type="number"/>
+
+    <div class="row">
+      <button id="btn-apply">Применить в iframe</button>
+      <button id="btn-postmsg" class="secondary">Через postMessage</button>
+    </div>
+
+    <label>Быстрые точки</label>
+    <div class="row">
+      <button class="secondary" data-lat="57.1522" data-lon="65.5272">Тюмень центр</button>
+      <button class="secondary" data-lat="55.7558" data-lon="37.6173">Москва</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="secondary" data-lat="59.9342" data-lon="30.3351">СПб</button>
+      <button class="secondary" data-lat="56.8389" data-lon="60.6057">Екб</button>
+    </div>
+
+    <label>Как вставить к себе на сайт</label>
+    <pre id="code-snippet">&lt;iframe
+  src="http://localhost:8080/embed?lat=57.1522&lon=65.5272&radius=300"
+  width="100%"
+  height="500"
+  style="border:0;border-radius:12px"
+  allow="fullscreen"
+  loading="lazy"
+&gt;&lt;/iframe&gt;</pre>
+
+    <div class="hint">
+      Фрейм берёт координаты из URL: <code>?lat=&lon=&radius=</code>. Можно менять src у iframe или слать <code>postMessage({type:'setCoords', lat, lon})</code>.<br><br>
+      Для продакшена замени <code>localhost:8080</code> на ваш домен.<br>
+      CORS и X-Frame-Options разрешены для встраивания.
+    </div>
+
+    <label>Лог сообщений от фрейма</label>
+    <pre id="log">ожидание...</pre>
+  </aside>
+
+  <div class="frame-wrap">
+    <div class="badge">▼ ваш 3D iframe ниже</div>
+    <iframe id="pano-frame" src="/embed?lat=57.1522&lon=65.5272&radius=300" allow="fullscreen" loading="lazy"></iframe>
+  </div>
+</main>
+
+<script>
+  const frame = document.getElementById('pano-frame');
+  const inpLat = document.getElementById('inp-lat');
+  const inpLon = document.getElementById('inp-lon');
+  const inpRadius = document.getElementById('inp-radius');
+  const codeSnippet = document.getElementById('code-snippet');
+  const logEl = document.getElementById('log');
+
+  function updateCode(){
+    const lat = inpLat.value.trim()||'57.1522';
+    const lon = inpLon.value.trim()||'65.5272';
+    const r = inpRadius.value.trim()||'300';
+    codeSnippet.textContent = `<iframe
+  src="http://localhost:8080/embed?lat=${lat}&lon=${lon}&radius=${r}"
+  width="100%"
+  height="500"
+  style="border:0;border-radius:12px"
+  allow="fullscreen"
+  loading="lazy"
+></iframe>
+
+<!-- Через JS API -->
+<script>
+  const iframe = document.getElementById('pano-frame');
+  iframe.contentWindow.postMessage({type:'setCoords', lat:${lat}, lon:${lon}, radius:${r}}, '*');
+<\/script>`;
+  }
+
+  function applyViaSrc(){
+    const lat = parseFloat(inpLat.value);
+    const lon = parseFloat(inpLon.value);
+    const r = parseInt(inpRadius.value||'300',10);
+    if(!isFinite(lat)||!isFinite(lon)){ alert('Неверные координаты'); return; }
+    frame.src = `/embed?lat=${lat}&lon=${lon}&radius=${r}`;
+    updateCode();
+    logEl.textContent = `src изменен -> /embed?lat=${lat}&lon=${lon}&radius=${r}\n` + new Date().toLocaleTimeString();
+  }
+
+  function applyViaPostMessage(){
+    const lat = parseFloat(inpLat.value);
+    const lon = parseFloat(inpLon.value);
+    const r = parseInt(inpRadius.value||'300',10);
+    if(!isFinite(lat)||!isFinite(lon)){ alert('Неверные координаты'); return; }
+    frame.contentWindow.postMessage({type:'setCoords', lat, lon, radius:r}, '*');
+    logEl.textContent = `postMessage sent: ${lat}, ${lon}, r=${r}\n` + new Date().toLocaleTimeString();
+  }
+
+  document.getElementById('btn-apply').addEventListener('click', applyViaSrc);
+  document.getElementById('btn-postmsg').addEventListener('click', applyViaPostMessage);
+
+  document.querySelectorAll('button[data-lat]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      inpLat.value = btn.dataset.lat;
+      inpLon.value = btn.dataset.lon;
+      applyViaSrc();
+    });
+  });
+
+  [inpLat, inpLon, inpRadius].forEach(el=> el.addEventListener('input', updateCode));
+
+  window.addEventListener('message', (ev)=>{
+    // сообщения от фрейма
+    if(ev.data && ev.data.type==='panoramas-3d-ready'){
+      logEl.textContent = `Фрейм готов: ${ev.data.lat}, ${ev.data.lon}, зданий: ${ev.data.buildings}\n` + logEl.textContent;
+    }
+  });
+
+  updateCode();
+</script>
+</body>
+</html>

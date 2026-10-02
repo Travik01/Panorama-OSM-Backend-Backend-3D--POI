@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D Embed + POI</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/aero3d.css') }}">
+<style>
+  html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden;background:#87CEEB;font-family:system-ui,sans-serif}
+  #aero{width:100%;height:100%;position:relative;overflow:hidden;background:#87CEEB}
+  #loading{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:linear-gradient(180deg,#87CEEB 0%,#a8d5e5 100%);color:#2a2f3a;z-index:5}
+  .spinner{width:36px;height:36px;border:3px solid rgba(0,0,0,.1);border-top-color:#4d8dff;border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #info{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:4px 8px;border-radius:6px;z-index:6;backdrop-filter:blur(4px)}
+  #error{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#1a1f28;color:#f66;padding:20px;text-align:center;z-index:10;flex-direction:column;gap:10px}
+
+  /* POI markers - пастельные пины */
+  .panorama-poi-overlay{position:absolute;inset:0;pointer-events:none;z-index:12}
+  .pano-poi-marker{
+    position:absolute;pointer-events:auto;cursor:pointer;padding:0;
+    width:18px;height:18px;min-width:18px;min-height:18px;border-radius:50%;
+    background:#121924;border:1px solid rgba(255,255,255,.75);
+    box-shadow:0 0 12px rgba(0,0,0,.55);display:inline-flex;align-items:center;justify-content:center;
+    border:none;background:transparent;
+  }
+  .pano-poi-marker--icon{width:34px;height:47px;min-width:34px;min-height:47px;background:transparent;border:none;box-shadow:none;border-radius:0;align-items:flex-end;justify-content:center}
+  .pano-poi-icon{width:34px;height:47px;display:block;pointer-events:none;filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))}
+  .pano-poi-dot{width:10px;height:10px;border-radius:50%;background:#fff;box-shadow:0 0 8px rgba(0,0,0,.5)}
+  .pano-poi-tooltip{
+    position:absolute;top:-10px;left:50%;transform:translate(-50%,-140%) scale(.95);
+    background:rgba(12,17,29,.98);color:#fff;padding:4px 8px;border-radius:6px;font-size:11px;white-space:nowrap;
+    opacity:0;pointer-events:none;transition:opacity 120ms,transform 120ms;
+  }
+  .pano-poi-marker:hover .pano-poi-tooltip{opacity:1;transform:translate(-50%,-120%) scale(1)}
+  .pano-poi-marker--icon .pano-poi-tooltip{top:0;transform:translate(-50%,-100%) scale(.95)}
+  .pano-poi-marker--icon:hover .pano-poi-tooltip{transform:translate(-50%,-112%) scale(1)}
+  .pano-poi-distance-always{
+    position:absolute;top:100%;left:50%;transform:translate(-50%,2px);
+    background:rgba(0,0,0,.65);color:#fff;font-size:10px;padding:1px 5px;border-radius:10px;white-space:nowrap;
+  }
+  #poi-count{position:absolute;right:8px;top:8px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:4px 8px;border-radius:6px;z-index:6}
+</style>
+</head>
+<body>
+<div id="aero">
+  <div id="loading"><div class="spinner"></div><div id="loading-text">Загрузка 3D + POI…</div></div>
+  <div id="error"></div>
+  <div id="info"></div>
+  <div id="poi-count"></div>
+</div>
+
+<script src="{{ url_for('static', filename='js/three.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/OrbitControls.js') }}"></script>
+<script src="{{ url_for('static', filename='js/aero3d.js') }}"></script>
+<script>
+(function(){
+  const params = new URLSearchParams(window.location.search);
+  let lat = parseFloat(params.get('lat'));
+  let lon = parseFloat(params.get('lon'));
+  let radius = parseInt(params.get('radius')||params.get('radius_m')||'300',10);
+  let poiRadius = parseInt(params.get('poi_radius')||'500',10);
+  let showPoi = params.get('poi')!=='0'; // ?poi=0 чтобы скрыть метки
+  const loadingEl = document.getElementById('loading');
+  const loadingText = document.getElementById('loading-text');
+  const errorEl = document.getElementById('error');
+  const infoEl = document.getElementById('info');
+  const poiCountEl = document.getElementById('poi-count');
+
+  let viewer = null;
+  let buildingsData = [];
+  let origin = null;
+  let poiOverlay = null;
+  let poiOverlayFrame = null;
+  let currentPoiItems = [];
+  let poiIcons = {};
+
+  function toRad(d){return d*Math.PI/180}
+  function toDeg(r){return r*180/Math.PI}
+  function norm(a){return ((a%360)+360)%360}
+  function haversineM(lat1,lon1,lat2,lon2){
+    const R=6371000;
+    const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+    const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  }
+  function latLonToLocal(oLat,oLon,tLat,tLon){
+    const cosLat=Math.cos(toRad(oLat));
+    return {x:(tLon-oLon)*111320*cosLat, z:(tLat-oLat)*111320};
+  }
+  function centroidLocal(building){
+    if(!building||!building.ring||!building.ring.length) return null;
+    let sx=0,sy=0; for(let i=0;i<building.ring.length;i++){sx+=building.ring[i][0];sy+=building.ring[i][1];}
+    return {x:sx/building.ring.length, z:sy/building.ring.length};
+  }
+  function nearestBuilding(poiLat, poiLon, buildings, maxDist=70){
+    let best=null,bd=Infinity;
+    if(!buildings) return null;
+    for(let b of buildings){
+      if(b._lat==null||b._lon==null) continue;
+      const d=haversineM(poiLat,poiLon,b._lat,b._lon);
+      if(d<bd&&d<=maxDist){bd=d;best=b}
+    }
+    return best?{building:best,dist:bd}:null;
+  }
+  function escapeHtml(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+
+  function showError(msg){
+    loadingEl.style.display='none';
+    errorEl.style.display='flex';
+    errorEl.innerHTML = `<div>${msg}</div><button onclick="location.reload()" style="margin-top:10px;padding:6px 12px;border-radius:6px;border:0;background:#4d8dff;color:#fff;cursor:pointer">Перезагрузить</button>`;
+  }
+
+  function ensureOverlay(container){
+    let ov = container.querySelector('.panorama-poi-overlay');
+    if(!ov){
+      ov=document.createElement('div');
+      ov.className='panorama-poi-overlay';
+      container.appendChild(ov);
+    }
+    poiOverlay=ov;
+    return ov;
+  }
+
+  function renderPoiOverlay(items){
+    currentPoiItems = items||[];
+    const container = document.getElementById('aero');
+    const ov = ensureOverlay(container);
+    ov.innerHTML='';
+    currentPoiItems.forEach((item, idx)=>{
+      if(item.worldX==null) return;
+      const m=document.createElement('button');
+      m.type='button'; m.className='pano-poi-marker'; m.dataset.index=idx;
+      const iconUrl = poiIcons[item.category];
+      const title = escapeHtml(item.title);
+      const dist = item.dist_m!=null? `${escapeHtml(String(item.dist_m))}м` : '';
+      const tip = `<span class="pano-poi-tooltip">${title}</span><span class="pano-poi-distance-always">${dist}</span>`;
+      if(iconUrl){
+        m.classList.add('pano-poi-marker--icon');
+        m.innerHTML = `<img class="pano-poi-icon" src="${iconUrl}" alt=""/>${tip}`;
+      }else{
+        m.innerHTML = `<span class="pano-poi-dot"></span>${tip}`;
+      }
+      m.addEventListener('click', ()=> focusItem(idx));
+      ov.appendChild(m);
+    });
+    updateOverlay();
+    startLoop();
+  }
+
+  function updateOverlay(){
+    if(!poiOverlay || !viewer || !viewer.cam) return;
+    const T = window.THREE;
+    const cam = viewer.cam;
+    try{ cam.updateMatrixWorld(); cam.updateProjectionMatrix(); }catch(e){}
+    const camPos = cam.position.clone();
+    const camDir = new T.Vector3(); try{ cam.getWorldDirection(camDir);}catch(e){camDir.set(0,0,-1)}
+    const rect = poiOverlay.getBoundingClientRect();
+    const W=rect.width, H=rect.height;
+    if(!W||!H) return;
+
+    Array.from(poiOverlay.children).forEach(marker=>{
+      const idx = parseInt(marker.dataset.index,10);
+      const item = currentPoiItems[idx];
+      if(!item || item.worldX==null){ marker.style.display='none'; return; }
+      const target = new T.Vector3(item.worldX, item.targetHeight||5, item.worldZ);
+      const toPoint = new T.Vector3().subVectors(target, camPos);
+      if(toPoint.dot(camDir) <= 0.2){ marker.style.display='none'; return; }
+      const ndc = target.clone().project(cam);
+      if(ndc.z>1||ndc.z<-1||Math.abs(ndc.x)>1.2||Math.abs(ndc.y)>1.2){ marker.style.display='none'; return; }
+      const x = (ndc.x*0.5+0.5)*W;
+      const y = (-ndc.y*0.5+0.5)*H;
+      if(x<10||x>W-10||y<15||y>H-15){ marker.style.display='none'; return; }
+      marker.style.display='block';
+      marker.style.left=x+'px';
+      marker.style.top=y+'px';
+      marker.style.transform = marker.classList.contains('pano-poi-marker--icon')?'translate(-50%,-100%)':'translateX(-50%)';
+    });
+  }
+
+  function startLoop(){
+    if(poiOverlayFrame) return;
+    const tick=()=>{ updateOverlay(); poiOverlayFrame=requestAnimationFrame(tick); };
+    tick();
+  }
+
+  function focusItem(idx){
+    const item = currentPoiItems[idx];
+    if(!item||!viewer) return;
+    if(item.worldX!=null && viewer._camPos){
+      const dx=item.worldX - viewer._camPos.x;
+      const dz=item.worldZ - viewer._camPos.z;
+      const bearing = norm(toDeg(Math.atan2(dx,dz)));
+      const yaw = norm(180 - bearing);
+      viewer.setYaw(yaw,700);
+    }
+    // подсветка
+    try{
+      window.parent.postMessage({type:'poi-click', title:item.title, lat:item.lat, lon:item.lon, category:item.category}, '*');
+    }catch(e){}
+  }
+
+  async function loadPoi(){
+    if(!showPoi) return;
+    try{
+      const [iconsRes, poiRes] = await Promise.all([
+        fetch('/api/poi-icons').then(r=>r.json()).catch(()=>({})),
+        fetch(`/api/poi-summary?lat=${origin.lat}&lon=${origin.lon}&radius_m=${poiRadius}`).then(r=>r.json()).catch(()=>null)
+      ]);
+      poiIcons = iconsRes||{};
+
+      if(!poiRes || poiRes.status!=='ok'){ poiCountEl.textContent='POI: 0'; return; }
+
+      const items = [];
+      // poiRes уже дедуплицирован на бэке (по координатам 4 знака, приоритет БД)
+      for(let cat of poiRes.categories){
+        let cnt=0;
+        for(let it of (cat.items||[])){
+          if(cnt>=2) break; // макс 2 на категорию для оверлея чтобы не засорять
+          const nearest = nearestBuilding(it.lat, it.lon, buildingsData, 70);
+          let tLat=it.lat, tLon=it.lon, tH=2.5, wX=null,wZ=null;
+          if(nearest){
+            tLat=nearest.building._lat; tLon=nearest.building._lon;
+            tH=(nearest.building.height||8)*0.6;
+            const c = centroidLocal(nearest.building);
+            if(c){ wX=c.x; wZ=c.z; }
+            else { const loc=latLonToLocal(origin.lat,origin.lon,tLat,tLon); wX=loc.x; wZ=loc.z; }
+          } else {
+            const loc=latLonToLocal(origin.lat,origin.lon,tLat,tLon);
+            wX=loc.x; wZ=loc.z;
+          }
+          items.push({
+            category:cat.key, title:it.title, dist_m:it.dist_m,
+            lat:tLat, lon:tLon, worldX:wX, worldZ:wZ, targetHeight:tH
+          });
+          cnt++;
+        }
+      }
+      poiCountEl.textContent = `POI: ${items.length}`;
+      renderPoiOverlay(items);
+    }catch(e){
+      console.warn('POI load failed', e);
+      poiCountEl.textContent='POI: err';
+    }
+  }
+
+  async function loadScene(tLat,tLon,tRadius){
+    if(!isFinite(tLat)||!isFinite(tLon)){
+      showError('Нужны ?lat= &lon=');
+      return;
+    }
+    radius=tRadius||radius;
+    origin={lat:tLat,lon:tLon};
+    infoEl.textContent=`${tLat.toFixed(5)},${tLon.toFixed(5)} | r=${radius}м`;
+    loadingEl.style.display='flex';
+    errorEl.style.display='none';
+    if(viewer){ try{viewer.destroy();}catch(e){} viewer=null; }
+    document.getElementById('aero').querySelectorAll('canvas').forEach(c=>c.remove());
+    if(poiOverlay){ poiOverlay.innerHTML=''; }
+    if(poiOverlayFrame){ cancelAnimationFrame(poiOverlayFrame); poiOverlayFrame=null; }
+
+    try{
+      const aeroEl=document.getElementById('aero');
+      const ar=new window.AeroRenderer(aeroEl,{bg:0x87CEEB,ground:0x73787b,fov:75});
+      if(!ar.init()){ showError('WebGL не поддерживается'); return; }
+      const res=await fetch(`/api/osm-buildings?lat=${encodeURIComponent(tLat)}&lon=${encodeURIComponent(tLon)}&radius_m=${radius}`);
+      const data=await res.json();
+      if(data.status==='error') throw new Error(data.message);
+
+      let camX=0,camZ=0;
+      if(data.buildings&&data.buildings.length){
+        const nearest=data.buildings[0]; const ring=nearest.ring;
+        let cx=0,cy=0; for(let i=0;i<ring.length;i++){cx+=ring[i][0];cy+=ring[i][1];}
+        camX=cx/ring.length; camZ=cy/ring.length;
+      }
+      buildingsData=data.buildings||[];
+      ar.load(data,camX,camZ);
+      ar.start();
+      viewer=ar;
+      loadingEl.style.display='none';
+      loadingText.textContent='Загрузка POI…';
+      
+      try{ window.parent.postMessage({type:'panoramas-3d-ready', lat:tLat, lon:tLon, buildings:data.count}, '*'); }catch(e){}
+
+      await loadPoi();
+      loadingEl.style.display='none';
+
+    }catch(e){
+      console.error(e);
+      showError('Ошибка: '+(e.message||e));
+    }
+  }
+
+  if(isNaN(lat)||isNaN(lon)){ lat=57.1522; lon=65.5272; }
+  loadScene(lat,lon,radius);
+
+  window.addEventListener('message', ev=>{
+    const d=ev.data;
+    if(!d||typeof d!=='object') return;
+    if(d.type==='setCoords'||d.type==='panoramas-set-coords'){
+      const nlat=parseFloat(d.lat), nlon=parseFloat(d.lon), nrad=parseInt(d.radius||d.radius_m||'300',10);
+      if(isFinite(nlat)&&isFinite(nlon)) loadScene(nlat,nlon,nrad);
+    }
+  });
+
+  window.PanoramasEmbed={ setCoords:(la,lo,r=300)=>loadScene(la,lo,r), getViewer:()=>viewer };
+})();
+</script>
+</body>
+</html>

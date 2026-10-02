@@ -1,0 +1,9 @@
+/* aero3d.css */
+@keyframes spin{to{transform:rotate(360deg)}}
+.aero-view-toggle{display:none;gap:4px;margin-bottom:10px}
+.aero-view-toggle button{background:#1f2430;border:1px solid #2a2f3a;color:#9aa1ae;padding:6px 14px;font-size:12px;cursor:pointer;transition:all .15s}
+.aero-view-toggle button:first-child{border-radius:8px 0 0 8px}
+.aero-view-toggle button:last-child{border-radius:0 8px 8px 0}
+.aero-view-toggle button.active{background:#4d8dff;color:#fff;font-weight:600;border-color:#4d8dff}
+/* ★ Расстояние всегда видно под меткой */
+.pano-poi-distance-always{display:block;font-size:10px;color:#ccc;margin-top:1px;text-shadow:0 1px 3px rgba(0,0,0,0.8);white-space:nowrap}

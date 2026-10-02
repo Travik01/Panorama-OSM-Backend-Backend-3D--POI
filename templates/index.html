@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Карта с панорамами</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css" />
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/aero3d.css') }}">
+
+<style>
+.aero-view-toggle{display:none;gap:4px;margin-bottom:10px}
+.aero-view-toggle button{background:#1f2430;border:1px solid #2a2f3a;color:#9aa1ae;padding:6px 14px;font-size:12px;cursor:pointer;transition:all .15s}
+.aero-view-toggle button:first-child{border-radius:8px 0 0 8px}
+.aero-view-toggle button:last-child{border-radius:0 8px 8px 0}
+.aero-view-toggle button.active{background:#4d8dff;color:#fff;font-weight:600;border-color:#4d8dff}
+</style>
+</head>
+<body>
+
+<div id="app" data-is-admin="{{ 'true' if is_admin else 'false' }}" data-map-center="{{ '57.1530,65.5412' }}">
+
+  <!-- Поиск -->
+  <div style="position:fixed;top:56px;left:12px;z-index:1000;width:320px">
+    <div style="position:relative">
+      <input type="text" id="search-input" placeholder="Поиск улиц, мест…" style="width:100%;padding:10px 12px 10px 36px;background:rgba(22,27,34,0.95);border:1px solid #2a2f3a;border-radius:8px;color:#e7e9ee;font-size:14px;backdrop-filter:blur(8px);outline:none" autocomplete="off"/>
+      <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none" width="16" height="16" fill="#9aa1ae" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+    </div>
+    <div id="search-results" style="display:none;background:rgba(22,27,34,0.95);border:1px solid #2a2f3a;border-radius:0 0 8px 8px;max-height:300px;overflow-y:auto;backdrop-filter:blur(8px)"></div>
+  </div>
+
+  <header class="topbar">
+      <h1 id="app-title" data-i18n="appTitle">Точки с панорамами</h1>
+    <div class="admin-controls">
+      <div class="lang-controls">
+        <button id="btn-lang-ru" class="btn btn-ghost btn-lang active" type="button">RU</button>
+        <button id="btn-lang-en" class="btn btn-ghost btn-lang" type="button">EN</button>
+      </div>
+      <span id="admin-status" class="admin-status {{ 'on' if is_admin else '' }}">
+        {{ 'Режим администратора включён' if is_admin else 'Режим просмотра' }}
+      </span>
+      <button id="btn-current-location" class="btn btn-ghost" type="button" data-i18n="currentLocation">
+        Текущее местоположение
+      </button>
+      {% if is_admin %}
+        <button id="btn-add-mode" class="btn btn-primary">Добавить точку</button>
+        <button id="btn-logout" class="btn btn-ghost">Выйти из админки</button>
+      {% else %}
+        <button id="btn-login" class="btn btn-ghost">Вход для администратора</button>
+      {% endif %}
+    </div>
+  </header>
+
+  <div id="map"></div>
+
+  <!-- Login -->
+  <div id="login-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2 data-i18n="adminLoginTitle">Вход администратора</h2>
+      <input id="login-password" type="password" placeholder="Пароль">
+      <div class="modal-actions">
+        <button id="login-submit" class="btn btn-primary" data-i18n="login">Войти</button>
+        <button class="btn btn-ghost js-close-modal" data-i18n="cancel">Отмена</button>
+      </div>
+      <p id="login-error" class="error hidden"></p>
+    </div>
+  </div>
+
+  <!-- Add Point -->
+  <div id="add-point-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <h2>Новая точка</h2>
+      <p class="hint">Координаты: <span id="add-point-coords"></span></p>
+      <label>Название</label>
+      <input id="add-point-title" type="text" placeholder="Например: Смотровая площадка">
+      <label>Описание (необязательно)</label>
+      <textarea id="add-point-description" rows="2" placeholder="Комментарий"></textarea>
+      <div id="panorama-preview" class="panorama-box"></div>
+      <p id="panorama-status" class="hint"></p>
+      <div class="modal-actions">
+        <button id="add-point-submit" class="btn btn-primary">Сохранить точку</button>
+        <button class="btn btn-ghost js-close-modal">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- View -->
+  <div id="view-point-modal" class="modal hidden">
+    <div class="modal-card wide">
+      <div class="view-layout">
+        <div class="view-left">
+          <h2 id="view-point-title"></h2>
+          <p id="view-point-description" class="hint"></p>
+          <!-- 3D / Panorama toggle -->
+          <div class="aero-view-toggle" id="aero-view-toggle">
+            <button id="btn-view-3d" class="active">3D Здания</button>
+            <button id="btn-view-pano">Панорама</button>
+          </div>
+          <div id="view-panorama" class="panorama-box"></div>
+          <p id="view-panorama-status" class="hint"></p>
+          <div id="view-panorama-loading" class="hidden">
+            <p class="hint">Загрузка панорамы…</p>
+          </div>
+        </div>
+        <aside class="view-right">
+          <h3>Сводка по БД</h3>
+          <div id="poi-summary" class="poi-summary">
+            <p class="hint">Ожидаем данные о ближайших объектах…</p>
+          </div>
+        </aside>
+      </div>
+      <div class="modal-actions">
+        <button id="view-point-reload" class="btn btn-ghost" type="button">Перезагрузить панораму</button>
+        {% if is_admin %}
+          <button id="view-point-delete" class="btn btn-danger" data-i18n="deletePoint">Удалить точку</button>
+        {% endif %}
+        <button class="btn btn-ghost js-close-modal" data-i18n="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plan Viewer Overlay -->
+  <div id="plan-viewer-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:3000;align-items:center;justify-content:center;cursor:pointer">
+    <img id="plan-viewer-img" style="max-width:90vw;max-height:90vh;object-fit:contain;border-radius:8px"/>
+  </div>
+
+  <!-- Plan Admin Modal -->
+  <div id="plan-modal" class="modal hidden">
+    <div class="modal-card" style="max-width:400px">
+      <h2>План этажа</h2>
+      <div id="plan-info" style="margin-bottom:12px;font-size:13px;color:#9aa1ae"></div>
+      <input type="file" id="plan-file-input" accept="image/*" style="display:none"/>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="plan-upload-btn">Загрузить план</button>
+        <button class="btn btn-danger" id="plan-remove-btn" style="display:none">Удалить план</button>
+        <button class="btn btn-ghost" id="plan-cancel-btn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Three.js ЛОКАЛЬНО (не CDN) -->
+<script src="{{ url_for('static', filename='js/three.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/OrbitControls.js') }}"></script>
+<script src="{{ url_for('static', filename='js/aero3d.js') }}"></script>
+<script src="{{ url_for('static', filename='js/map.js') }}"></script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a196006919ab973c',t:'MTc4Mzc1Mzk2NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
